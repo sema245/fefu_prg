@@ -1,59 +1,47 @@
-import os
-import numpy as np
+from pathlib import Path
 import cv2
+import numpy as np
 import Augmentation
 
-os.makedirs('src/aug', exist_ok=True)
-os.makedirs('src/aug_mask', exist_ok=True)
-os.makedirs('src/aug_grab_mask', exist_ok=True)
+OUTS = {
+    'aug': 'src/aug',
+    'mask': 'src/aug_mask',
+    'grab': 'src/aug_grab_mask',
+}
+for p in OUTS.values():
+    Path(p).mkdir(parents=True, exist_ok=True)
 
-img_bgr = cv2.imread('heli.jpg')
-if img_bgr is None:
-    raise ValueError("Не удалось загрузить heli.jpg")
+def red_mask(img):
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    ranges = (
+        ((0, 100, 100), (10, 255, 255)),
+        ((170, 100, 100), (180, 255, 255)),
+    )
+    mask = sum(
+        cv2.inRange(hsv, np.array(lo), np.array(hi))
+        for lo, hi in ranges
+    )
+    k = np.ones((3, 3), np.uint8)
+    return cv2.dilate(cv2.erode(mask, k, 1), k, 1)
 
-img_hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+def grabcut_mask(img, mask):
+    gc = np.full(img.shape[:2], cv2.GC_PR_BGD, np.uint8)
+    gc[mask == 255] = cv2.GC_PR_FGD
+    bgd = np.zeros((1, 65), np.float64)
+    fgd = np.zeros((1, 65), np.float64)
+    cv2.grabCut(img, gc, None, bgd, fgd, 5, cv2.GC_INIT_WITH_MASK)
+    return np.where((gc == cv2.GC_FGD) | (gc == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
 
-lower_red1 = np.array([0, 100, 100])
-upper_red1 = np.array([10, 255, 255])
-mask1 = cv2.inRange(img_hsv, lower_red1, upper_red1)
+def augment_and_save(data, dst, n=50, seed=42):
+    for i, img in enumerate(Augmentation.Augmentation(data).generate(n, seed=seed)):
+        cv2.imwrite(f'{dst}/augmented_{i}.jpg', img)
 
-lower_red2 = np.array([170, 100, 100])
-upper_red2 = np.array([180, 255, 255])
-mask2 = cv2.inRange(img_hsv, lower_red2, upper_red2)
+img = cv2.imread('heli.jpg')
+if img is None:
+    raise ValueError('Не удалось загрузить heli.jpg')
 
-mask = mask1 + mask2
+mask = red_mask(img)
+grab = grabcut_mask(img, mask)
 
-kernel = np.ones((3, 3), np.uint8)
-erosion = cv2.erode(mask, kernel, iterations=1)
-mask = cv2.dilate(erosion, kernel, iterations=1)
-
-grab_mask = np.full(img_bgr.shape[:2], cv2.GC_PR_BGD, dtype=np.uint8)
-grab_mask[mask == 255] = cv2.GC_PR_FGD
-
-bgdModel = np.zeros((1, 65), np.float64)
-fgdModel = np.zeros((1, 65), np.float64)
-
-cv2.grabCut(img_bgr, grab_mask, None, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_MASK)
-
-grab_mask_final = np.where(
-    (grab_mask == cv2.GC_FGD) | (grab_mask == cv2.GC_PR_FGD),
-    255,
-    0
-).astype('uint8')
-
-aug = Augmentation.Augmentation(img_bgr)
-aug_mask = Augmentation.Augmentation(mask)
-aug_grab_mask = Augmentation.Augmentation(grab_mask_final)
-
-aug_result = aug.generate(50, seed=42)
-aug_mask_result = aug_mask.generate(50, seed=42)
-aug_grab_mask_result = aug_grab_mask.generate(50, seed=42)
-
-for i, img in enumerate(aug_result):
-    cv2.imwrite(f'src/aug/augmented_{i}.jpg', img)
-
-for i, img in enumerate(aug_mask_result):
-    cv2.imwrite(f'src/aug_mask/augmented_{i}.jpg', img)
-
-for i, img in enumerate(aug_grab_mask_result):
-    cv2.imwrite(f'src/aug_grab_mask/augmented_{i}.jpg', img)
+for key, data in {'aug': img, 'mask': mask, 'grab': grab}.items():
+    augment_and_save(data, OUTS[key])
